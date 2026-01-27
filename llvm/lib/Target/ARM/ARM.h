@@ -57,6 +57,7 @@ FunctionPass *createARMSLSHardeningPass();
 FunctionPass *createARMIndirectThunks();
 Pass *createMVELaneInterleavingPass();
 FunctionPass *createARMFixCortexA57AES1742098Pass();
+FunctionPass *createARMStackZeroingPass();
 
 void LowerARMMachineInstrToMCInst(const MachineInstr *MI, MCInst &OutMI,
                                   ARMAsmPrinter &AP);
@@ -78,6 +79,7 @@ void initializeMVELaneInterleavingPass(PassRegistry &);
 void initializeMVETPAndVPTOptimisationsPass(PassRegistry &);
 void initializeMVETailPredicationPass(PassRegistry &);
 void initializeMVEVPTBlockPass(PassRegistry &);
+void initializeARMStackZeroingPassPass(PassRegistry &);
 void initializeThumb2ITBlockPass(PassRegistry &);
 void initializeThumb2SizeReducePass(PassRegistry &);
 

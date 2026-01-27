@@ -110,6 +110,7 @@ extern "C" LLVM_ABI LLVM_EXTERNAL_VISIBILITY void LLVMInitializeARMTarget() {
   initializeARMSLSHardeningPass(Registry);
   initializeMVELaneInterleavingPass(Registry);
   initializeARMFixCortexA57AES1742098Pass(Registry);
+  initializeARMStackZeroingPassPass(Registry);
   initializeARMDAGToDAGISelLegacyPass(Registry);
   initializeKCFIPass(Registry);
 }
@@ -537,6 +538,10 @@ void ARMPassConfig::addPreEmitPass() {
 }
 
 void ARMPassConfig::addPreEmitPass2() {
+
+  // Zero stack frames for functions with zero-stack attribute.
+  // Must run before ConstantIslandPass since it increases block sizes.
+  addPass(createARMStackZeroingPass());
 
   // Inserts fixup instructions before unsafe AES operations. Instructions may
   // be inserted at the start of blocks and at within blocks so this pass has to
