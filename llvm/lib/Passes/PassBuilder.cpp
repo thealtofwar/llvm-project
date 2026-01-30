@@ -338,6 +338,7 @@
 #include "llvm/Transforms/Scalar/SimplifyCFG.h"
 #include "llvm/Transforms/Scalar/Sink.h"
 #include "llvm/Transforms/Scalar/SpeculativeExecution.h"
+#include "llvm/Transforms/Scalar/StackZeroing.h"
 #include "llvm/Transforms/Scalar/StraightLineStrengthReduce.h"
 #include "llvm/Transforms/Scalar/StructurizeCFG.h"
 #include "llvm/Transforms/Scalar/TailRecursionElimination.h"
