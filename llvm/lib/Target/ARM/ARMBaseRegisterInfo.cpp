@@ -241,6 +241,9 @@ getReservedRegs(const MachineFunction &MF) const {
   // Some targets reserve R9.
   if (STI.isR9Reserved())
     markSuperRegs(Reserved, ARM::R9);
+  // Reserve R12 if requested.
+  if (STI.isR12Reserved())
+    markSuperRegs(Reserved, ARM::R12);
   // Reserve D16-D31 if the subtarget doesn't support them.
   if (!STI.hasD32()) {
     static_assert(ARM::D31 == ARM::D16 + 15, "Register list not consecutive!");

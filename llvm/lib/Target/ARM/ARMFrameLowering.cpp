@@ -161,6 +161,186 @@
 
 using namespace llvm;
 
+/// The fixed offset between the regular stack and the shadow call stack.
+static const unsigned SCSOffset = 0x20200000;
+
+static void emitSCSPrologue(MachineFunction &MF, MachineBasicBlock &MBB,
+                            MachineBasicBlock::iterator MBBI,
+                            const DebugLoc &DL) {
+  if (!MF.getFunction().hasFnAttribute(Attribute::ShadowCallStack))
+    return;
+
+  // Don't emit SCS prologue if LR is not spilled to the regular stack.
+  const std::vector<CalleeSavedInfo> &CSI =
+      MF.getFrameInfo().getCalleeSavedInfo();
+  if (llvm::none_of(CSI, [](const CalleeSavedInfo &I) {
+        return I.getReg() == ARM::LR;
+      }))
+    return;
+
+  const ARMSubtarget &STI = MF.getSubtarget<ARMSubtarget>();
+  const ARMBaseInstrInfo &TII = *STI.getInstrInfo();
+  ARMFunctionInfo *AFI = MF.getInfo<ARMFunctionInfo>();
+
+  // R12 must be reserved to serve as the shadow call stack base.
+  const MachineRegisterInfo &MRI = MF.getRegInfo();
+  if (!MRI.isReserved(ARM::R12))
+    report_fatal_error("Shadow call stack requires R12 to be reserved");
+
+  // Shadow call stack prologue: store LR to [R12 + SCSOffset], then advance R12.
+  // Use constant pool to load offset to avoid large immediate issues
+  //   ldr r0, =SCSOffset
+  //   add r12, r12, r0
+  //   str lr, [r12]
+  //   add r12, r12, #4
+  //   sub r12, r12, r0
+  if (!AFI->isThumbFunction()) {
+    // ARM mode - use R0 as scratch (will be overwritten anyway)
+    unsigned ConstantPoolIdx = MF.getConstantPool()->getConstantPoolIndex(
+        ConstantInt::get(Type::getInt32Ty(MF.getFunction().getContext()), SCSOffset), Align(4));
+    BuildMI(MBB, MBBI, DL, TII.get(ARM::LDRcp), ARM::R0)
+        .addConstantPoolIndex(ConstantPoolIdx)
+        .addImm(0)
+        .add(predOps(ARMCC::AL));
+    BuildMI(MBB, MBBI, DL, TII.get(ARM::ADDrr), ARM::R12)
+        .addReg(ARM::R12)
+        .addReg(ARM::R0)
+        .add(predOps(ARMCC::AL))
+        .add(condCodeOp());
+    BuildMI(MBB, MBBI, DL, TII.get(ARM::STRi12))
+        .addReg(ARM::LR)
+        .addReg(ARM::R12)
+        .addImm(0)
+        .add(predOps(ARMCC::AL));
+    BuildMI(MBB, MBBI, DL, TII.get(ARM::ADDri), ARM::R12)
+        .addReg(ARM::R12)
+        .addImm(4)
+        .add(predOps(ARMCC::AL))
+        .add(condCodeOp());
+    BuildMI(MBB, MBBI, DL, TII.get(ARM::SUBrr), ARM::R12)
+        .addReg(ARM::R12)
+        .addReg(ARM::R0)
+        .add(predOps(ARMCC::AL))
+        .add(condCodeOp());
+  } else {
+    // Thumb2 mode - use R0 as scratch
+    unsigned ConstantPoolIdx = MF.getConstantPool()->getConstantPoolIndex(
+        ConstantInt::get(Type::getInt32Ty(MF.getFunction().getContext()), SCSOffset), Align(4));
+    BuildMI(MBB, MBBI, DL, TII.get(ARM::t2LDRpci), ARM::R0)
+        .addConstantPoolIndex(ConstantPoolIdx)
+        .add(predOps(ARMCC::AL));
+    BuildMI(MBB, MBBI, DL, TII.get(ARM::t2ADDrr), ARM::R12)
+        .addReg(ARM::R12)
+        .addReg(ARM::R0)
+        .add(predOps(ARMCC::AL))
+        .add(condCodeOp());
+    BuildMI(MBB, MBBI, DL, TII.get(ARM::t2STRi12))
+        .addReg(ARM::LR)
+        .addReg(ARM::R12)
+        .addImm(0)
+        .add(predOps(ARMCC::AL));
+    BuildMI(MBB, MBBI, DL, TII.get(ARM::t2ADDri), ARM::R12)
+        .addReg(ARM::R12)
+        .addImm(4)
+        .add(predOps(ARMCC::AL))
+        .add(condCodeOp());
+    BuildMI(MBB, MBBI, DL, TII.get(ARM::t2SUBrr), ARM::R12)
+        .addReg(ARM::R12)
+        .addReg(ARM::R0)
+        .add(predOps(ARMCC::AL))
+        .add(condCodeOp());
+  }
+
+  // LR and R12 are live-in to the entry block.
+  MBB.addLiveIn(ARM::LR);
+  MBB.addLiveIn(ARM::R12);
+}
+
+static void emitSCSEpilogue(MachineFunction &MF, MachineBasicBlock &MBB,
+                            MachineBasicBlock::iterator MBBI,
+                            const DebugLoc &DL) {
+  if (!MF.getFunction().hasFnAttribute(Attribute::ShadowCallStack))
+    return;
+
+  // Don't emit SCS epilogue if LR is not spilled to the regular stack.
+  const std::vector<CalleeSavedInfo> &CSI =
+      MF.getFrameInfo().getCalleeSavedInfo();
+  if (llvm::none_of(CSI, [](const CalleeSavedInfo &I) {
+        return I.getReg() == ARM::LR;
+      }))
+    return;
+
+  const ARMSubtarget &STI = MF.getSubtarget<ARMSubtarget>();
+  const ARMBaseInstrInfo &TII = *STI.getInstrInfo();
+  ARMFunctionInfo *AFI = MF.getInfo<ARMFunctionInfo>();
+
+  // R12 must be reserved to serve as the shadow call stack base.
+  const MachineRegisterInfo &MRI = MF.getRegInfo();
+  if (!MRI.isReserved(ARM::R12))
+    report_fatal_error("Shadow call stack requires R12 to be reserved");
+
+  // Shadow call stack epilogue: retreat R12, then load LR from [R12 + SCSOffset].
+  //   sub r12, r12, #4
+  //   ldr r0, =SCSOffset
+  //   add r12, r12, r0
+  //   ldr lr, [r12]
+  //   sub r12, r12, r0
+  if (!AFI->isThumbFunction()) {
+    // ARM mode
+    BuildMI(MBB, MBBI, DL, TII.get(ARM::SUBri), ARM::R12)
+        .addReg(ARM::R12)
+        .addImm(4)
+        .add(predOps(ARMCC::AL))
+        .add(condCodeOp());
+    unsigned ConstantPoolIdx = MF.getConstantPool()->getConstantPoolIndex(
+        ConstantInt::get(Type::getInt32Ty(MF.getFunction().getContext()), SCSOffset), Align(4));
+    BuildMI(MBB, MBBI, DL, TII.get(ARM::LDRcp), ARM::R0)
+        .addConstantPoolIndex(ConstantPoolIdx)
+        .addImm(0)
+        .add(predOps(ARMCC::AL));
+    BuildMI(MBB, MBBI, DL, TII.get(ARM::ADDrr), ARM::R12)
+        .addReg(ARM::R12)
+        .addReg(ARM::R0)
+        .add(predOps(ARMCC::AL))
+        .add(condCodeOp());
+    BuildMI(MBB, MBBI, DL, TII.get(ARM::LDRi12), ARM::LR)
+        .addReg(ARM::R12)
+        .addImm(0)
+        .add(predOps(ARMCC::AL));
+    BuildMI(MBB, MBBI, DL, TII.get(ARM::SUBrr), ARM::R12)
+        .addReg(ARM::R12)
+        .addReg(ARM::R0)
+        .add(predOps(ARMCC::AL))
+        .add(condCodeOp());
+  } else {
+    // Thumb2 mode
+    BuildMI(MBB, MBBI, DL, TII.get(ARM::t2SUBri), ARM::R12)
+        .addReg(ARM::R12)
+        .addImm(4)
+        .add(predOps(ARMCC::AL))
+        .add(condCodeOp());
+    unsigned ConstantPoolIdx = MF.getConstantPool()->getConstantPoolIndex(
+        ConstantInt::get(Type::getInt32Ty(MF.getFunction().getContext()), SCSOffset), Align(4));
+    BuildMI(MBB, MBBI, DL, TII.get(ARM::t2LDRpci), ARM::R0)
+        .addConstantPoolIndex(ConstantPoolIdx)
+        .add(predOps(ARMCC::AL));
+    BuildMI(MBB, MBBI, DL, TII.get(ARM::t2ADDrr), ARM::R12)
+        .addReg(ARM::R12)
+        .addReg(ARM::R0)
+        .add(predOps(ARMCC::AL))
+        .add(condCodeOp());
+    BuildMI(MBB, MBBI, DL, TII.get(ARM::t2LDRi12), ARM::LR)
+        .addReg(ARM::R12)
+        .addImm(0)
+        .add(predOps(ARMCC::AL));
+    BuildMI(MBB, MBBI, DL, TII.get(ARM::t2SUBrr), ARM::R12)
+        .addReg(ARM::R12)
+        .addReg(ARM::R0)
+        .add(predOps(ARMCC::AL))
+        .add(condCodeOp());
+  }
+}
+
 static cl::opt<bool>
 SpillAlignedNEONRegs("align-neon-spills", cl::Hidden, cl::init(true),
                      cl::desc("Align ARM NEON spills in prolog and epilog"));
@@ -922,6 +1102,9 @@ void ARMFrameLowering::emitPrologue(MachineFunction &MF,
   if (MF.getFunction().getCallingConv() == CallingConv::GHC)
     return;
 
+  // Emit shadow call stack prologue before any frame setup.
+  emitSCSPrologue(MF, MBB, MBB.begin(), dl);
+
   StackAdjustingInsts DefCFAOffsetCandidates;
   bool HasFP = hasFP(MF);
 
@@ -1555,6 +1738,10 @@ void ARMFrameLowering::emitEpilogue(MachineFunction &MF,
       BuildMI(MBB, MBBI, DebugLoc(), STI.getInstrInfo()->get(ARM::t2AUT));
   }
 
+  // Emit shadow call stack epilogue: load LR from the shadow stack before
+  // the return instruction.
+  emitSCSEpilogue(MF, MBB, MBB.getFirstTerminator(), dl);
+
   if (MF.hasWinCFI()) {
     insertSEHRange(MBB, RangeStart, MBB.end(), TII, MachineInstr::FrameDestroy);
     BuildMI(MBB, MBB.end(), dl, TII.get(ARM::SEH_EpilogEnd))
@@ -1738,6 +1925,7 @@ void ARMFrameLowering::emitPopInst(MachineBasicBlock &MBB,
   const TargetRegisterInfo &TRI = *STI.getRegisterInfo();
   ARMFunctionInfo *AFI = MF.getInfo<ARMFunctionInfo>();
   bool hasPAC = AFI->shouldSignReturnAddress();
+  bool hasSCS = MF.getFunction().hasFnAttribute(Attribute::ShadowCallStack);
   DebugLoc DL;
   bool isTailCall = false;
   bool isInterrupt = false;
@@ -1770,7 +1958,7 @@ void ARMFrameLowering::emitPopInst(MachineBasicBlock &MBB,
 
       if (Reg == ARM::LR && !isTailCall && !isVarArg && !isInterrupt &&
           !isCmseEntry && !isTrap && AFI->getArgumentStackToRestore() == 0 &&
-          STI.hasV5TOps() && MBB.succ_empty() && !hasPAC &&
+          STI.hasV5TOps() && MBB.succ_empty() && !hasPAC && !hasSCS &&
           (PushPopSplit != ARMSubtarget::SplitR11WindowsSEH &&
            PushPopSplit != ARMSubtarget::SplitR11AAPCSSignRA)) {
         Reg = ARM::PC;
