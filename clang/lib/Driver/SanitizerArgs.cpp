@@ -707,6 +707,13 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
         << "-ffixed-x18";
   }
 
+  if ((Kinds & SanitizerKind::ShadowCallStack) && TC.getTriple().isARM() &&
+      !Args.hasArg(options::OPT_ffixed_r12) && DiagnoseErrors) {
+    D.Diag(diag::err_drv_argument_only_allowed_with)
+        << lastArgumentForMask(D, Args, Kinds & SanitizerKind::ShadowCallStack)
+        << "-ffixed-r12";
+  }
+
   // Report error if there are non-trapping sanitizers that require
   // c++abi-specific  parts of UBSan runtime, and they are not provided by the
   // toolchain. We don't have a good way to check the latter, so we just

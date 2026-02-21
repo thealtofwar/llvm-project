@@ -34,6 +34,7 @@
 #include "llvm/CodeGen/TargetInstrInfo.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/IR/DebugLoc.h"
+#include "llvm/IR/Function.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/ErrorHandling.h"
 #include <cassert>
@@ -106,6 +107,206 @@ static void emitCallSPUpdate(MachineBasicBlock &MBB,
                              unsigned MIFlags = MachineInstr::NoFlags) {
   emitThumbRegPlusImmediate(MBB, MBBI, dl, ARM::SP, ARM::SP, NumBytes, TII,
                             MRI, MIFlags);
+}
+
+/// Emit the shadow call stack pointer initialization for the entry point.
+/// Sets R12 to 0x20200000. Uses R4 as scratch (saved via push/pop).
+static void emitSCSInit(MachineBasicBlock &MBB,
+                        MachineBasicBlock::iterator MBBI,
+                        const TargetInstrInfo &TII) {
+  DebugLoc dl;
+
+  // push {r4}
+  BuildMI(MBB, MBBI, dl, TII.get(ARM::tPUSH))
+      .add(predOps(ARMCC::AL))
+      .addReg(ARM::R4)
+      .setMIFlags(MachineInstr::FrameSetup);
+
+  // Build 0x20200000 in r4:
+  //   movs r4, #0x20
+  //   lsls r4, r4, #8    -> 0x2000
+  //   adds r4, #0x20     -> 0x2020
+  //   lsls r4, r4, #16   -> 0x20200000
+  BuildMI(MBB, MBBI, dl, TII.get(ARM::tMOVi8), ARM::R4)
+      .addDef(ARM::CPSR)
+      .addImm(0x20)
+      .add(predOps(ARMCC::AL))
+      .setMIFlags(MachineInstr::FrameSetup);
+  BuildMI(MBB, MBBI, dl, TII.get(ARM::tLSLri), ARM::R4)
+      .addDef(ARM::CPSR)
+      .addReg(ARM::R4, RegState::Kill)
+      .addImm(8)
+      .add(predOps(ARMCC::AL))
+      .setMIFlags(MachineInstr::FrameSetup);
+  BuildMI(MBB, MBBI, dl, TII.get(ARM::tADDi8), ARM::R4)
+      .addDef(ARM::CPSR)
+      .addReg(ARM::R4, RegState::Kill)
+      .addImm(0x20)
+      .add(predOps(ARMCC::AL))
+      .setMIFlags(MachineInstr::FrameSetup);
+  BuildMI(MBB, MBBI, dl, TII.get(ARM::tLSLri), ARM::R4)
+      .addDef(ARM::CPSR)
+      .addReg(ARM::R4, RegState::Kill)
+      .addImm(16)
+      .add(predOps(ARMCC::AL))
+      .setMIFlags(MachineInstr::FrameSetup);
+
+  // mov r12, r4
+  BuildMI(MBB, MBBI, dl, TII.get(ARM::tMOVr), ARM::R12)
+      .addReg(ARM::R4)
+      .add(predOps(ARMCC::AL))
+      .setMIFlags(MachineInstr::FrameSetup);
+
+  // pop {r4}
+  BuildMI(MBB, MBBI, dl, TII.get(ARM::tPOP))
+      .add(predOps(ARMCC::AL))
+      .addReg(ARM::R4, RegState::Define)
+      .setMIFlags(MachineInstr::FrameSetup);
+}
+
+/// Emit the shadow call stack prologue: save LR to the shadow stack pointed
+/// to by R12, then advance R12 by 4. Uses R4/R5 as scratch (saved via
+/// push/pop).
+static void emitSCSPrologue(MachineBasicBlock &MBB,
+                            MachineBasicBlock::iterator MBBI,
+                            const TargetInstrInfo &TII) {
+  DebugLoc dl;
+
+  // push {r4, r5}
+  BuildMI(MBB, MBBI, dl, TII.get(ARM::tPUSH))
+      .add(predOps(ARMCC::AL))
+      .addReg(ARM::R4)
+      .addReg(ARM::R5)
+      .setMIFlags(MachineInstr::FrameSetup);
+
+  // mov r4, r12
+  BuildMI(MBB, MBBI, dl, TII.get(ARM::tMOVr), ARM::R4)
+      .addReg(ARM::R12)
+      .add(predOps(ARMCC::AL))
+      .setMIFlags(MachineInstr::FrameSetup);
+
+  // mov r5, lr
+  BuildMI(MBB, MBBI, dl, TII.get(ARM::tMOVr), ARM::R5)
+      .addReg(ARM::LR)
+      .add(predOps(ARMCC::AL))
+      .setMIFlags(MachineInstr::FrameSetup);
+
+  // str r5, [r4]
+  BuildMI(MBB, MBBI, dl, TII.get(ARM::tSTRi))
+      .addReg(ARM::R5)
+      .addReg(ARM::R4)
+      .addImm(0)
+      .add(predOps(ARMCC::AL))
+      .setMIFlags(MachineInstr::FrameSetup);
+
+  // adds r4, r4, #4
+  BuildMI(MBB, MBBI, dl, TII.get(ARM::tADDi8), ARM::R4)
+      .addDef(ARM::CPSR)
+      .addReg(ARM::R4, RegState::Kill)
+      .addImm(4)
+      .add(predOps(ARMCC::AL))
+      .setMIFlags(MachineInstr::FrameSetup);
+
+  // mov r12, r4
+  BuildMI(MBB, MBBI, dl, TII.get(ARM::tMOVr), ARM::R12)
+      .addReg(ARM::R4)
+      .add(predOps(ARMCC::AL))
+      .setMIFlags(MachineInstr::FrameSetup);
+
+  // pop {r4, r5}
+  BuildMI(MBB, MBBI, dl, TII.get(ARM::tPOP))
+      .add(predOps(ARMCC::AL))
+      .addReg(ARM::R4, RegState::Define)
+      .addReg(ARM::R5, RegState::Define)
+      .setMIFlags(MachineInstr::FrameSetup);
+}
+
+/// Emit the shadow call stack epilogue: restore LR from the shadow stack
+/// (after decrementing R12 by 4). Uses R4/R5 as scratch (saved via push/pop).
+/// If OnlyDecrement, only decrements R12 without restoring LR (for tail calls).
+static void emitSCSEpilogue(MachineBasicBlock &MBB,
+                            MachineBasicBlock::iterator MBBI,
+                            const TargetInstrInfo &TII,
+                            bool OnlyDecrement = false) {
+  DebugLoc dl = MBBI != MBB.end() ? MBBI->getDebugLoc() : DebugLoc();
+
+  if (OnlyDecrement) {
+    // push {r4}
+    BuildMI(MBB, MBBI, dl, TII.get(ARM::tPUSH))
+        .add(predOps(ARMCC::AL))
+        .addReg(ARM::R4)
+        .setMIFlags(MachineInstr::FrameDestroy);
+    // mov r4, r12
+    BuildMI(MBB, MBBI, dl, TII.get(ARM::tMOVr), ARM::R4)
+        .addReg(ARM::R12)
+        .add(predOps(ARMCC::AL))
+        .setMIFlags(MachineInstr::FrameDestroy);
+    // subs r4, r4, #4
+    BuildMI(MBB, MBBI, dl, TII.get(ARM::tSUBi8), ARM::R4)
+        .addDef(ARM::CPSR)
+        .addReg(ARM::R4, RegState::Kill)
+        .addImm(4)
+        .add(predOps(ARMCC::AL))
+        .setMIFlags(MachineInstr::FrameDestroy);
+    // mov r12, r4
+    BuildMI(MBB, MBBI, dl, TII.get(ARM::tMOVr), ARM::R12)
+        .addReg(ARM::R4)
+        .add(predOps(ARMCC::AL))
+        .setMIFlags(MachineInstr::FrameDestroy);
+    // pop {r4}
+    BuildMI(MBB, MBBI, dl, TII.get(ARM::tPOP))
+        .add(predOps(ARMCC::AL))
+        .addReg(ARM::R4, RegState::Define)
+        .setMIFlags(MachineInstr::FrameDestroy);
+    return;
+  }
+
+  // push {r4, r5}
+  BuildMI(MBB, MBBI, dl, TII.get(ARM::tPUSH))
+      .add(predOps(ARMCC::AL))
+      .addReg(ARM::R4)
+      .addReg(ARM::R5)
+      .setMIFlags(MachineInstr::FrameDestroy);
+
+  // mov r4, r12
+  BuildMI(MBB, MBBI, dl, TII.get(ARM::tMOVr), ARM::R4)
+      .addReg(ARM::R12)
+      .add(predOps(ARMCC::AL))
+      .setMIFlags(MachineInstr::FrameDestroy);
+
+  // subs r4, r4, #4
+  BuildMI(MBB, MBBI, dl, TII.get(ARM::tSUBi8), ARM::R4)
+      .addDef(ARM::CPSR)
+      .addReg(ARM::R4, RegState::Kill)
+      .addImm(4)
+      .add(predOps(ARMCC::AL))
+      .setMIFlags(MachineInstr::FrameDestroy);
+
+  // ldr r5, [r4]
+  BuildMI(MBB, MBBI, dl, TII.get(ARM::tLDRi), ARM::R5)
+      .addReg(ARM::R4)
+      .addImm(0)
+      .add(predOps(ARMCC::AL))
+      .setMIFlags(MachineInstr::FrameDestroy);
+
+  // mov lr, r5
+  BuildMI(MBB, MBBI, dl, TII.get(ARM::tMOVr), ARM::LR)
+      .addReg(ARM::R5, RegState::Kill)
+      .add(predOps(ARMCC::AL))
+      .setMIFlags(MachineInstr::FrameDestroy);
+
+  // mov r12, r4
+  BuildMI(MBB, MBBI, dl, TII.get(ARM::tMOVr), ARM::R12)
+      .addReg(ARM::R4)
+      .add(predOps(ARMCC::AL))
+      .setMIFlags(MachineInstr::FrameDestroy);
+
+  // pop {r4, r5}
+  BuildMI(MBB, MBBI, dl, TII.get(ARM::tPOP))
+      .add(predOps(ARMCC::AL))
+      .addReg(ARM::R4, RegState::Define)
+      .addReg(ARM::R5, RegState::Define)
+      .setMIFlags(MachineInstr::FrameDestroy);
 }
 
 
@@ -464,6 +665,23 @@ void Thumb1FrameLowering::emitPrologue(MachineFunction &MF,
   if (MFI.hasVarSizedObjects())
     AFI->setShouldRestoreSPFromFP(true);
 
+  // Shadow call stack: initialize R12 at _start and/or save LR.
+  if (MF.getFunction().hasFnAttribute(Attribute::ShadowCallStack)) {
+    bool IsEntryPoint = MF.getFunction().getName() == "_start";
+    if (IsEntryPoint)
+      emitSCSInit(MBB, MBBI, TII);
+
+    bool LRSpilled = false;
+    for (const CalleeSavedInfo &I : CSI) {
+      if (I.getReg() == ARM::LR) {
+        LRSpilled = true;
+        break;
+      }
+    }
+    if (LRSpilled)
+      emitSCSPrologue(MBB, MBBI, TII);
+  }
+
   // In some cases, virtual registers have been introduced, e.g. by uses of
   // emitThumbRegPlusImmInReg.
   MF.getProperties().resetNoVRegs();
@@ -555,6 +773,69 @@ void Thumb1FrameLowering::emitEpilogue(MachineFunction &MF,
     bool Done = emitPopSpecialFixUp(MBB, /* DoIt */ true);
     (void)Done;
     assert(Done && "Emission of the special fixup failed!?");
+  }
+
+  // Shadow call stack: restore LR from the shadow stack.
+  if (MF.getFunction().hasFnAttribute(Attribute::ShadowCallStack)) {
+    bool LRSpilled = false;
+    for (const CalleeSavedInfo &I : MFI.getCalleeSavedInfo()) {
+      if (I.getReg() == ARM::LR) {
+        LRSpilled = true;
+        break;
+      }
+    }
+    if (LRSpilled) {
+      auto Term = MBB.getFirstTerminator();
+      if (Term != MBB.end()) {
+        unsigned TermOpc = Term->getOpcode();
+        if (TermOpc == ARM::tPOP_RET) {
+          // Convert tPOP_RET to tPOP (without PC) + shadow stack + bx lr.
+          DebugLoc TermDL = Term->getDebugLoc();
+          MachineInstrBuilder PopMIB =
+              BuildMI(MBB, Term, TermDL, TII.get(ARM::tPOP))
+                  .add(predOps(ARMCC::AL))
+                  .setMIFlags(MachineInstr::FrameDestroy);
+          bool HasRegs = false;
+          SmallVector<MachineOperand, 4> ImplicitOps;
+          for (const MachineOperand &MO : Term->operands()) {
+            if (MO.isReg() && MO.isDef() && !MO.isImplicit() &&
+                MO.getReg() != ARM::PC) {
+              PopMIB.addReg(MO.getReg(), RegState::Define);
+              HasRegs = true;
+            }
+            if (MO.isReg() && MO.isImplicit())
+              ImplicitOps.push_back(MO);
+          }
+          MBB.erase(Term);
+          if (!HasRegs)
+            MBB.erase(PopMIB.getInstr());
+
+          // Skip the unpopped LR/PC stack slot.
+          MachineBasicBlock::iterator InsertPt = MBB.end();
+          emitThumbRegPlusImmediate(MBB, InsertPt, TermDL, ARM::SP, ARM::SP,
+                                    4, TII, *RegInfo,
+                                    MachineInstr::FrameDestroy);
+
+          // Insert shadow call stack epilogue.
+          InsertPt = MBB.end();
+          emitSCSEpilogue(MBB, InsertPt, TII);
+
+          // Add bx lr with original implicit operands.
+          MachineInstrBuilder BxMIB =
+              BuildMI(MBB, MBB.end(), TermDL, TII.get(ARM::tBX_RET))
+                  .add(predOps(ARMCC::AL))
+                  .setMIFlags(MachineInstr::FrameDestroy);
+          for (const MachineOperand &MO : ImplicitOps)
+            BxMIB.add(MO);
+        } else if (TermOpc == ARM::tBX_RET) {
+          emitSCSEpilogue(MBB, Term, TII);
+        } else if (TermOpc == ARM::TCRETURNdi ||
+                   TermOpc == ARM::TCRETURNri ||
+                   TermOpc == ARM::TCRETURNrinotr12) {
+          emitSCSEpilogue(MBB, Term, TII, /*OnlyDecrement=*/true);
+        }
+      }
+    }
   }
 }
 
