@@ -665,11 +665,15 @@ void Thumb1FrameLowering::emitPrologue(MachineFunction &MF,
   if (MFI.hasVarSizedObjects())
     AFI->setShouldRestoreSPFromFP(true);
 
+  bool FoundEntry = false;
+  outs() << "Found fn: " << MF.getFunction().getName() << "\n";
   // Shadow call stack: initialize R12 at _start and/or save LR.
-  if (MF.getFunction().hasFnAttribute(Attribute::ShadowCallStack)) {
-    bool IsEntryPoint = MF.getFunction().getName() == "_start";
-    if (IsEntryPoint)
+  if (MF.getFunction().hasFnAttribute(Attribute::ShadowCallStack) && MF.getFunction().getName() != "HardFault_") {
+    bool IsEntryPoint = MF.getFunction().getName() == "main";
+    if (IsEntryPoint) {
       emitSCSInit(MBB, MBBI, TII);
+      FoundEntry = true;
+    }
 
     bool LRSpilled = false;
     for (const CalleeSavedInfo &I : CSI) {
@@ -678,8 +682,10 @@ void Thumb1FrameLowering::emitPrologue(MachineFunction &MF,
         break;
       }
     }
-    if (LRSpilled)
+    if (LRSpilled) {
+      outs() << "Added to: " << MF.getFunction().getName() << "\n";
       emitSCSPrologue(MBB, MBBI, TII);
+    }
   }
 
   // In some cases, virtual registers have been introduced, e.g. by uses of

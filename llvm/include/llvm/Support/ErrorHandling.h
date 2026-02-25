@@ -160,19 +160,7 @@ LLVM_ABI void install_out_of_memory_new_handler();
 /// Use this instead of assert(0). It conveys intent more clearly, suppresses
 /// diagnostics for unreachable code paths, and allows compilers to omit
 /// unnecessary code.
-#ifndef NDEBUG
 #define llvm_unreachable(msg)                                                  \
-  ::llvm::llvm_unreachable_internal(msg, __FILE__, __LINE__)
-#elif !defined(LLVM_BUILTIN_UNREACHABLE)
-#define llvm_unreachable(msg) ::llvm::llvm_unreachable_internal()
-#elif LLVM_UNREACHABLE_OPTIMIZE
-#define llvm_unreachable(msg) LLVM_BUILTIN_UNREACHABLE
-#else
-#define llvm_unreachable(msg)                                                  \
-  do {                                                                         \
-    LLVM_BUILTIN_TRAP;                                                         \
-    LLVM_BUILTIN_UNREACHABLE;                                                  \
-  } while (false)
-#endif
+  ::llvm::report_fatal_error(msg)
 
 #endif

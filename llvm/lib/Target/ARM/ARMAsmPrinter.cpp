@@ -1241,6 +1241,15 @@ void ARMAsmPrinter::EmitUnwindingInstruction(const MachineInstr *MI) {
   unsigned SrcReg, DstReg;
 
   switch (Opc) {
+  case ARM::tPOP:
+  case ARM::tSTRi:
+    // These are used in Thumb1 shadow call stack (SCS) prologue sequences
+    // (saving/restoring scratch registers, storing LR to the shadow stack).
+    // They don't contribute to regular unwind information.
+    if (MI->getFlag(MachineInstr::FrameSetup)) {
+      return;
+    }
+    llvm_unreachable("Unsupported opcode for unwinding information, 1308");
   case ARM::tPUSH:
     // special case: tPUSH does not have src/dst regs.
     SrcReg = DstReg = ARM::SP;
@@ -1305,7 +1314,7 @@ void ARMAsmPrinter::EmitUnwindingInstruction(const MachineInstr *MI) {
     switch (Opc) {
     default:
       MI->print(errs());
-      llvm_unreachable("Unsupported opcode for unwinding information");
+      llvm_unreachable("Unsupported opcode for unwinding information, 1308");
     case ARM::tPUSH:
       // Special case here: no src & dst reg, but two extra imp ops.
       StartOp = 2; NumOffset = 2;
@@ -1381,7 +1390,7 @@ void ARMAsmPrinter::EmitUnwindingInstruction(const MachineInstr *MI) {
       switch (Opc) {
       default:
         MI->print(errs());
-        llvm_unreachable("Unsupported opcode for unwinding information");
+        llvm_unreachable("Unsupported opcode for unwinding information, 1384");
       case ARM::tLDRspi:
         // Used to restore LR in a prologue which uses it as a temporary, has
         // no effect on unwind tables.
@@ -1434,7 +1443,7 @@ void ARMAsmPrinter::EmitUnwindingInstruction(const MachineInstr *MI) {
       }
     } else if (DstReg == ARM::SP) {
       MI->print(errs());
-      llvm_unreachable("Unsupported opcode for unwinding information");
+      llvm_unreachable("Unsupported opcode for unwinding information, 1437");
     } else {
       int64_t Offset = 0;
       switch (Opc) {
@@ -1499,7 +1508,7 @@ void ARMAsmPrinter::EmitUnwindingInstruction(const MachineInstr *MI) {
         break;
       default:
         MI->print(errs());
-        llvm_unreachable("Unsupported opcode for unwinding information");
+        llvm_unreachable("Unsupported opcode for unwinding information, 1502");
       }
     }
   }
