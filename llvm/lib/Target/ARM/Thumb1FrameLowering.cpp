@@ -666,11 +666,12 @@ void Thumb1FrameLowering::emitPrologue(MachineFunction &MF,
     AFI->setShouldRestoreSPFromFP(true);
 
   bool FoundEntry = false;
-  outs() << "Found fn: " << MF.getFunction().getName() << "\n";
+  outs() << "Found fn: " << "\"" << MF.getFunction().getName() << "\"" << "\n";
   // Shadow call stack: initialize R12 at _start and/or save LR.
   if (MF.getFunction().hasFnAttribute(Attribute::ShadowCallStack) && MF.getFunction().getName() != "HardFault_") {
-    bool IsEntryPoint = MF.getFunction().getName() == "main";
+    bool IsEntryPoint = MF.getFunction().getName() == "DefaultPreInit";
     if (IsEntryPoint) {
+      outs() << "Emitted to: " << "\"" << MF.getFunction().getName() << "\"" << "\n";
       emitSCSInit(MBB, MBBI, TII);
       FoundEntry = true;
     }
@@ -683,7 +684,7 @@ void Thumb1FrameLowering::emitPrologue(MachineFunction &MF,
       }
     }
     if (LRSpilled) {
-      outs() << "Added to: " << MF.getFunction().getName() << "\n";
+      outs() << "Added to: " << "\"" << MF.getFunction().getName() << "\"" << "\n";
       emitSCSPrologue(MBB, MBBI, TII);
     }
   }
