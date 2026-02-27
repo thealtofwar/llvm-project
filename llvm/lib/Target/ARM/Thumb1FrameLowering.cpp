@@ -669,7 +669,7 @@ void Thumb1FrameLowering::emitPrologue(MachineFunction &MF,
   outs() << "Found fn: " << "\"" << MF.getFunction().getName() << "\"" << "\n";
   // Shadow call stack: initialize R12 at _start and/or save LR.
   if (MF.getFunction().hasFnAttribute(Attribute::ShadowCallStack) && MF.getFunction().getName() != "HardFault_") {
-    bool IsEntryPoint = MF.getFunction().getName() == "DefaultPreInit";
+    bool IsEntryPoint = MF.getFunction().getName() == "__pre_init";
     if (IsEntryPoint) {
       outs() << "Emitted to: " << "\"" << MF.getFunction().getName() << "\"" << "\n";
       emitSCSInit(MBB, MBBI, TII);
